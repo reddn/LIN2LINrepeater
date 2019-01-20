@@ -7,7 +7,6 @@
 #define DEBUG 1
 
 CustomSoftwareSerial* customSerial;
-Rotary r = Rotary(2, 3);
 
 uint8_t lkas_off_array[][4] =  {{0x20,0x80,0xc0,0xa0},{0x00,0x80,0xc0,0xc0}};
 uint8_t counterbit = 0;
@@ -17,12 +16,18 @@ bool lkas_active = false;
 uint8_t errorcount = 0;
 uint8_t sendlast = 0;
 uint8_t buffilastsent = 0xff;
-uint8_t createdMsg[4][5]; //3 buffers of 5 bytes, the 4 bytes is the frame, the 5th byte is the index index off buff where the frame was made from (note the buff is 2 bytes)
+uint8_t createdMsg[4][5]; //4 buffers of 5 bytes, the 4 bytes is the frame, the 5th byte is the index index off buff where the frame was made from (note the buff is 2 bytes)
 uint8_t lastCreatedMsg = 0xff;
 uint8_t lastCreatedMsgSent = 0xff;
 volatile uint8_t  sendArrayFlag = 0;
-int16_t rotaryCounter = 450;  // min is 0 max is 906 -- default sent to center
+int16_t rotaryCounter = 0;  // min is 0 max is 906 -- default sent to center
 uint16_t mainCounter = 0;
+uint8_t useSerialRxAsInput;
+uint8_t forceLkasActive = 0;
+uint8_t forceLkasActive_prev = 0;
+uint8_t serialDebugSendCounter = 0;
+int16_t centerPoint = 225; //default for center
+bool sendDebug = false;
 
 void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp);
 void sendArray(uint8_t*);
@@ -36,8 +41,16 @@ void handleRotary();
 void setupTimersOld();
 void checkAndRunSendArrayFlag();
 void checkForRightCounterInPreCreatedMsg();
+void readSettingsPins();
+void checkSerialRxInput();
+void createAndSendSerialMsgUsingRotary();
+void changeCenterPoint();
+void sendSerialDebugDataOverSerial(uint8_t*);
 
-
+// all input pins are active low (except rotary pot input)
+//7: Force LKAS ON  - 12: set Rotary POT current pos as center  -
+// 13: used for LED when LKAS is on  - A0: Enable Rotary as INPUT  -
+// A4: send sendDebug on serial  - A5: rotary pot input
 void setup() {
 	Serial.begin(9600,SERIAL_8E1);
 	customSerial = new CustomSoftwareSerial(9, 10, true); // rx, tx, inverse logic (default false)
@@ -47,37 +60,34 @@ void setup() {
 	// setupTimer1();
 	setupTimersOld();
 	sei();//allow interrupts
-
+	pinMode(12, INPUT_PULLUP);
+	pinMode(7, INPUT_PULLUP); //Force LKAS Active
 	pinMode(13,OUTPUT);
+	pinMode(A0, INPUT_PULLUP);  //use Rotary encoder as input -- active low
+	pinMode(A4, INPUT_PULLUP);
+	digitalWrite(13,LOW);
+	useSerialRxAsInput = digitalRead(A0);
+	forceLkasActive = !digitalRead(7);
+	readSettingsPins();
+
 }
 
-// OP to LIN2LIN data structure (it still sends 4 bytes, but the last 2 are 0x00)
+/*** OP to LIN2LIN data structure (it still sends 4 bytes, but the last 2 are 0x00).
+//i will prolly change that later to only 2 bytes, but this code will not need to be changed
 // b01A0####    ####is big_steer   A = Active   first 2 bits is the byte counter
-// b10A#####    ##### is little steer
+// b10A#####    ##### is little steer  ***/
 void loop() {
 	checkForRightCounterInPreCreatedMsg();
-	checkAndRunSendArrayFlag();
+	checkAndRunSendArrayFlag(); //read seteting pin
 	handleRotary();
 
 	checkAndRunSendArrayFlag();
-
-	while(Serial.available()){
-		uint8_t temp = Serial.read();
-		Serial.print(temp);
-
-		if(temp == 0x00) break;
-		uint8_t active =  (temp >> 5) & 0x01; //if bb1bbbbb ... 1 is active bit
-		if(!active) {
-			lkas_active = false;
-			break;
-		}
-		uint8_t msgnum = (temp >> 6); //its 1 or 2
-		putByteInNextBuff(&msgnum,&temp);
-	} // end of while
+	if(useSerialRxAsInput) checkSerialRxInput();
 
 }  // end of loop
 
 void checkAndRunSendArrayFlag(){
+	readSettingsPins();
 	if(errorcount > 1) {
 		lkas_active = false;
 		errorcount = 0;
@@ -91,6 +101,8 @@ void checkAndRunSendArrayFlag(){
 		}
 		sendArrayFlag = 0;
 	}
+
+
 }
 
 void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp){
@@ -116,7 +128,6 @@ void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp){
 				createSerialMsg(&buffisub, &lastCreatedMsg);
 				if(buffi <5) buffi++; else buffi = 0;//assign buffi the next even, unless its 5, then go to 0
 			}
-
 			break;
 	}
 }
@@ -161,6 +172,15 @@ void sendLKASOffArray(){
 }
 
 void sendLKASOnArray(){
+	if(!useSerialRxAsInput){
+		createAndSendSerialMsgUsingRotary();
+		counterbit = counterbit > 0 ? 0x00 : 0x01;
+		return;
+	}
+	if(lastCreatedMsg == 0xff) {
+		errorcount = 0x10;
+		return;
+	}
 	if(lastCreatedMsg == lastCreatedMsgSent){  //TODO: allow 1 resend of last data, but needs to be recreated w new counter /checksum
 		errorcount++;
 		createSerialMsg(&createdMsg[lastCreatedMsgSent][4], &lastCreatedMsg);
@@ -169,15 +189,15 @@ void sendLKASOnArray(){
 	Serialwrite(createdMsg[lastCreatedMsg][1]);
 	Serialwrite(createdMsg[lastCreatedMsg][2]);
 	Serialwrite(createdMsg[lastCreatedMsg][3]);
+	if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&createdMsg[lastCreatedMsg]);
 	lastCreatedMsgSent = lastCreatedMsg;
 	counterbit = counterbit > 0 ? 0x00 : 0x01;
 }
 
 
-void handleRotary(){  // min is 0 max is 906
-	rotaryCounter = analogRead(A5);
-
-}
+void handleRotary(){  // min is 0 max is 906 of A5 using the rotary
+	rotaryCounter = (analogRead(A5) / 2) - centerPoint;  //new center is 225   //new center is 0. neg is left, pos is right
+}  //Need to scale the center so its not soo touchy.
 
 void checkForRightCounterInPreCreatedMsg(){
 	if(lastCreatedMsg != lastCreatedMsgSent){
@@ -187,6 +207,65 @@ void checkForRightCounterInPreCreatedMsg(){
 	}
 
 }
+
+void readSettingsPins(){
+	useSerialRxAsInput = digitalRead(A0);
+	forceLkasActive = !digitalRead(7);
+	if(forceLkasActive_prev != forceLkasActive) {
+		lkas_active = forceLkasActive;
+		forceLkasActive_prev = forceLkasActive;
+	}
+	if(!digitalRead(12)) 	centerPoint = analogRead(A5)  / 2;
+}
+
+void checkSerialRxInput(){
+	while(Serial.available()){
+		uint8_t temp = Serial.read();
+		Serial.print(temp);
+
+		if(temp == 0x00) break;
+		uint8_t active =  (temp >> 5) & 0x01; //if bb1bbbbb ... 1 is active bit
+		if(!active) {
+			lkas_active = false;
+			break;
+		}
+		uint8_t msgnum = (temp >> 6); //its 1 or 2
+		putByteInNextBuff(&msgnum,&temp);
+	} // end of while
+}
+
+void createAndSendSerialMsgUsingRotary(){
+	uint8_t data[4] = {0x00,0x00,0x00,0x00};
+	data[0] = (counterbit << 5) | ((rotaryCounter >> 12) & 0x8) | ((rotaryCounter >> 5) & 0xF);
+	data[1] = 0xA0 | (rotaryCounter & 0x1F);
+	data[2] =  0x80;
+	Serialwrite(data[0]);
+	Serialwrite(data[1]);
+	uint16_t total = data[0] + data[1] +   data[2];
+	Serialwrite(data[2]);
+	data[3] = chksm(&total);
+	Serialwrite(data[3]);
+	if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&data);
+}
+
+
+void sendSerialDebugDataOverSerial(uint8_t *thisdata[]){
+	if((serialDebugSendCounter % 31)== 0){
+		Serial.print("Start ");
+		Serial.print(*thisdata[0],BIN);
+		Serial.print(" ");
+		Serial.print(*thisdata[1],BIN);
+		Serial.print(" ");
+		Serial.print(*thisdata[2],BIN);
+		Serial.print(" ");
+		Serial.println(*thisdata[3],BIN);
+	}
+	serialDebugSendCounter++;
+
+}
+
+
+
 
 
 /*** CHECKSUMS ***/
