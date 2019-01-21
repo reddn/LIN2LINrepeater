@@ -28,6 +28,8 @@ uint8_t forceLkasActive_prev = 0;
 uint8_t serialDebugSendCounter = 0;
 int16_t centerPoint = 225; //default for center
 bool sendDebug = false;
+unsigned long pin13LedLastChange =0;
+uint8_t pin13LedStatus = 0;
 
 void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp);
 void sendArray(uint8_t*);
@@ -46,6 +48,8 @@ void checkSerialRxInput();
 void createAndSendSerialMsgUsingRotary();
 void changeCenterPoint();
 void sendSerialDebugDataOverSerial(uint8_t*);
+void printuint_t(uint8_t);
+void pin13LedFunc();
 
 // all input pins are active low (except rotary pot input)
 //7: Force LKAS ON  - 12: set Rotary POT current pos as center  -
@@ -91,15 +95,18 @@ void checkAndRunSendArrayFlag(){
 	if(errorcount > 1) {
 		lkas_active = false;
 		errorcount = 0;
-		sendArrayFlag = 0;
+		// sendArrayFlag = 0;
+		if(sendDebug) Serial.println("error greater than1..");
 	}
 	if(sendArrayFlag){
 		if(lkas_active){ //if lkas_active need to send the live data, if not, send
 			sendLKASOnArray();
+
 		}else {
 			sendLKASOffArray();
 		}
 		sendArrayFlag = 0;
+		pin13LedFunc();
 	}
 
 
@@ -167,6 +174,7 @@ void sendLKASOffArray(){
 	Serialwrite(lkas_off_array[counterbit][1]);
 	Serialwrite(lkas_off_array[counterbit][2]);
 	Serialwrite(lkas_off_array[counterbit][3]);
+	if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&lkas_off_array[counterbit][0]);
 	counterbit = counterbit > 0 ? 0x00 : 0x01;
 	// if(counterbit) counterbit = 0x00; else counterbit = 0x01;
 }
@@ -189,14 +197,18 @@ void sendLKASOnArray(){
 	Serialwrite(createdMsg[lastCreatedMsg][1]);
 	Serialwrite(createdMsg[lastCreatedMsg][2]);
 	Serialwrite(createdMsg[lastCreatedMsg][3]);
-	if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&createdMsg[lastCreatedMsg]);
 	lastCreatedMsgSent = lastCreatedMsg;
+	if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&createdMsg[lastCreatedMsg][0]);
 	counterbit = counterbit > 0 ? 0x00 : 0x01;
 }
 
 
 void handleRotary(){  // min is 0 max is 906 of A5 using the rotary
 	rotaryCounter = (analogRead(A5) / 2) - centerPoint;  //new center is 225   //new center is 0. neg is left, pos is right
+	if(centerPoint != 225){
+		if(rotaryCounter > 255) rotaryCounter = 255;
+		if(rotaryCounter < -255) rotaryCounter = -255;
+	}
 }  //Need to scale the center so its not soo touchy.
 
 void checkForRightCounterInPreCreatedMsg(){
@@ -211,6 +223,7 @@ void checkForRightCounterInPreCreatedMsg(){
 void readSettingsPins(){
 	useSerialRxAsInput = digitalRead(A0);
 	forceLkasActive = !digitalRead(7);
+	sendDebug = !digitalRead(A4);
 	if(forceLkasActive_prev != forceLkasActive) {
 		lkas_active = forceLkasActive;
 		forceLkasActive_prev = forceLkasActive;
@@ -245,30 +258,48 @@ void createAndSendSerialMsgUsingRotary(){
 	Serialwrite(data[2]);
 	data[3] = chksm(&total);
 	Serialwrite(data[3]);
-	if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&data);
+	if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&data[0]);
 }
 
 
-void sendSerialDebugDataOverSerial(uint8_t *thisdata[]){
+void sendSerialDebugDataOverSerial(uint8_t* thisdata){
 	if((serialDebugSendCounter % 31)== 0){
-		Serial.print("Start ");
-		Serial.print(*thisdata[0],BIN);
+		Serial.println("Start");
+		printuint_t(thisdata[0]);
 		Serial.print(" ");
-		Serial.print(*thisdata[1],BIN);
+		printuint_t(thisdata[1]);
 		Serial.print(" ");
-		Serial.print(*thisdata[2],BIN);
+		printuint_t(thisdata[2]);
 		Serial.print(" ");
-		Serial.println(*thisdata[3],BIN);
+		printuint_t(thisdata[3]);
+		Serial.println();
 	}
 	serialDebugSendCounter++;
 
 }
 
+void printuint_t(uint8_t var) {
+  for (uint8_t test = 0x80; test; test >>= 1) {
+    Serial.write(var  & test ? '1' : '0');
+  }
+  // Serial.println();
+}
+
+void pin13LedFunc(){
+	if((millis() - pin13LedLastChange) > 299){
+		if(lkas_active){
+			pin13LedStatus = !pin13LedStatus;
+			digitalWrite(13, pin13LedStatus);
+		}
+		else digitalWrite(13,LOW);
+		pin13LedLastChange = millis();
+	}
+}
 
 
 
 
-/*** CHECKSUMS ***/
+											/*** CHECKSUMS ***/
 uint8_t chksm(uint8_t *msgi){
 	uint16_t local = createdMsg[*msgi][0] + createdMsg[*msgi][1] + createdMsg[*msgi][2] ;
 	local = local % 512;
@@ -283,7 +314,7 @@ uint8_t chksm(uint16_t *input){
 }
 
 
-/*** TIMERS AND INTERRUPT FUNCTS ***/
+								/*** TIMERS AND INTERRUPT FUNCTS ***/
 
 ISR(TIMER2_COMPA_vect) {sendArrayFlag = 1;}//
 ISR(TIMER1_COMPA_vect){sendArrayFlag = 1;}//
