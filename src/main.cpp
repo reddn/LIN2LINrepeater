@@ -22,7 +22,7 @@ uint8_t lastCreatedMsgSent = 0xff;
 volatile uint8_t  sendArrayFlag = 0;
 int16_t rotaryCounter = 0;  // min is 0 max is 906 -- default sent to center
 uint16_t mainCounter = 0;
-uint8_t useSerialRxAsInput;
+uint8_t forceRotaryAsInput = 0;
 uint8_t forceLkasActive = 0;
 uint8_t forceLkasActive_prev = 0;
 uint8_t serialDebugSendCounter = 0;
@@ -30,26 +30,31 @@ int16_t centerPoint = 225; //default for center
 bool sendDebug = false;
 unsigned long pin13LedLastChange =0;
 uint8_t pin13LedStatus = 0;
+uint8_t useOP2byteSerialRX = 1;
+uint8_t MCUSerialData[4];
+uint8_t MCUSerialDataPos = 0;
+unsigned long lastTimeSerialSent = 0;
 
-void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp);
-void sendArray(uint8_t*);
+void readSettingsPins();
 void sendLKASOffArray();
 void sendLKASOnArray();
+void sendSerialDebugDataOverSerial(uint8_t*);
+void sendArray(uint8_t*);
 void createSerialMsg(uint8_t*, uint8_t*);
-uint8_t chksm(uint8_t*);
-uint8_t chksm(uint16_t*);
-void timeToSendSerial();
+void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp);
 void handleRotary();
-void setupTimersOld();
 void checkAndRunSendArrayFlag();
 void checkForRightCounterInPreCreatedMsg();
-void readSettingsPins();
-void checkSerialRxInput();
+void checkOPSerialRxInput();
 void createAndSendSerialMsgUsingRotary();
 void changeCenterPoint();
-void sendSerialDebugDataOverSerial(uint8_t*);
-void printuint_t(uint8_t);
 void pin13LedFunc();
+void printuint_t(uint8_t);
+void checkMCUSerialRxInput();
+uint8_t chksm(uint8_t*);
+uint8_t chksm(uint16_t*);
+void setupTimersOld();
+void sendMCUSerial();
 
 // all input pins are active low (except rotary pot input)
 //7: Force LKAS ON  - 12: set Rotary POT current pos as center  -
@@ -68,10 +73,10 @@ void setup() {
 	pinMode(7, INPUT_PULLUP); //Force LKAS Active
 	pinMode(13,OUTPUT);
 	pinMode(A0, INPUT_PULLUP);  //use Rotary encoder as input -- active low
-	pinMode(A4, INPUT_PULLUP);
+	pinMode(A4, INPUT_PULLUP);  //enable sending debuginfo on hardware Serial TX
+	pinMode(A3, INPUT_PULLUP);  //enable full ADAS MCU LIN frame buffering/repeating
 	digitalWrite(13,LOW);
-	useSerialRxAsInput = digitalRead(A0);
-	forceLkasActive = !digitalRead(7);
+
 	readSettingsPins();
 
 }
@@ -81,13 +86,17 @@ void setup() {
 // b01A0####    ####is big_steer   A = Active   first 2 bits is the byte counter
 // b10A#####    ##### is little steer  ***/
 void loop() {
-	checkForRightCounterInPreCreatedMsg();
-	checkAndRunSendArrayFlag(); //read seteting pin
+	if(useOP2byteSerialRX){
+		checkForRightCounterInPreCreatedMsg();
+		checkAndRunSendArrayFlag(); //read seteting pin
+	}
 	handleRotary();
 
-	checkAndRunSendArrayFlag();
-	if(useSerialRxAsInput) checkSerialRxInput();
-
+	if(useOP2byteSerialRX) {
+		checkAndRunSendArrayFlag();
+		checkOPSerialRxInput(); //modify this... use to be useSerialRxAsInput
+	}
+	else checkMCUSerialRxInput();
 }  // end of loop
 
 void checkAndRunSendArrayFlag(){
@@ -108,8 +117,6 @@ void checkAndRunSendArrayFlag(){
 		sendArrayFlag = 0;
 		pin13LedFunc();
 	}
-
-
 }
 
 void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp){
@@ -139,27 +146,6 @@ void putByteInNextBuff(uint8_t *msgnum, uint8_t *temp){
 	}
 }
 
-// void timeToSendSerial(){  //not used 1/19/19
-// 		uint8_t buffievenodd = buffi % 2;
-// 		uint8_t bufftosend;
-// 		if(buffievenodd){ //is odd
-// 			if(bufftosend == 1) bufftosend =4;
-// 			else bufftosend = buffi -1;
-// 		} else {  //is even
-// 			bufftosend = buffi;
-// 		}
-// 		uint8_t byte0 = ((buff[buffi] & 0xF) | (counterbit << 0x5));
-// 		uint8_t byte1 = (buff[buffi+1] & 0x1F) | 0xA0;
-// 		uint8_t byte2 = 0x80;
-// 		Serialwrite(byte0);
-// 		uint16_t total = byte0 + byte1 + byte2;
-// 		Serialwrite(byte1);
-// 		uint8_t byte3 = chksm((uint16_t*)&total);
-// 		Serialwrite(byte2);
-// 		Serialwrite(byte3);
-// 		if(counterbit) counterbit = 0x00; else counterbit = 0x01;
-// }
-
 void createSerialMsg(uint8_t *localbuffi, uint8_t *msgi){ //array index of buff (even)
 	createdMsg[*msgi][0] = (buff[*localbuffi] & 0xF) | (counterbit << 0x5);
   createdMsg[*msgi][1] = (buff[*localbuffi+1] & 0x1F) | 0xA0; //cratedMsgmsg [2] is hard set to 0x80
@@ -180,7 +166,7 @@ void sendLKASOffArray(){
 }
 
 void sendLKASOnArray(){
-	if(!useSerialRxAsInput){
+	if(forceRotaryAsInput){
 		createAndSendSerialMsgUsingRotary();
 		counterbit = counterbit > 0 ? 0x00 : 0x01;
 		return;
@@ -217,13 +203,13 @@ void checkForRightCounterInPreCreatedMsg(){
 			createSerialMsg(&createdMsg[lastCreatedMsg][4], &lastCreatedMsg);
 		}
 	}
-
 }
 
 void readSettingsPins(){
-	useSerialRxAsInput = digitalRead(A0);
+	forceRotaryAsInput = !digitalRead(A0);
 	forceLkasActive = !digitalRead(7);
 	sendDebug = !digitalRead(A4);
+	useOP2byteSerialRX = digitalRead(A3);
 	if(forceLkasActive_prev != forceLkasActive) {
 		lkas_active = forceLkasActive;
 		forceLkasActive_prev = forceLkasActive;
@@ -231,7 +217,7 @@ void readSettingsPins(){
 	if(!digitalRead(12)) 	centerPoint = analogRead(A5)  / 2;
 }
 
-void checkSerialRxInput(){
+void checkOPSerialRxInput(){
 	while(Serial.available()){
 		uint8_t temp = Serial.read();
 		Serial.print(temp);
@@ -275,10 +261,14 @@ void sendSerialDebugDataOverSerial(uint8_t* thisdata){
 		int16_t apply_steer = ((thisdata[0] & 0x7)<<5) | ((thisdata[0] & 0x8) << 12) |
 				(thisdata[1] & 0xF);
 		if((thisdata[0] & 8) > 0) apply_steer = apply_steer | 0x7F00;
-		Serial.println(apply_steer, DEC);
+		Serial.print(apply_steer, DEC);
+		Serial.print(" -- actual ");
+		Serial.print(rotaryCounter, DEC);
+		Serial.print(" t ");
+		Serial.println(millis() - lastTimeSerialSent, DEC);
 	}
 	serialDebugSendCounter++;
-
+	lastTimeSerialSent = millis();
 }
 
 void printuint_t(uint8_t var) {
@@ -297,6 +287,50 @@ void pin13LedFunc(){
 		else digitalWrite(13,LOW);
 		pin13LedLastChange = millis();
 	}
+}
+// make unsigned long lastTimeMCUSerialSent
+// uint8_t MCUSerialData[4]
+// uint8_t MCUSerialDataPos = 0
+void checkMCUSerialRxInput(){
+	while(Serial.available()){
+		uint8_t tempdata;
+		tempdata = Serial.read();
+		if(MCUSerialDataPos == 0){
+			if((tempdata >> 5) < 2) {
+				counterbit = tempdata >> 5; //keeps counter bits aligned
+				MCUSerialData[0] = tempdata;
+			}
+			else return;
+		} else{
+			MCUSerialData[MCUSerialDataPos] = tempdata;
+			MCUSerialDataPos++;
+			if(MCUSerialDataPos > 2) {
+				MCUSerialDataPos = 0;
+				sendMCUSerial();
+			}
+		}
+	}//end While
+} // end function
+
+
+void sendMCUSerial(){
+	pin13LedFunc();
+	if(forceRotaryAsInput){
+		createAndSendSerialMsgUsingRotary();
+	}else {
+		uint8_t _msgi = 0;
+		createdMsg[0][0] = MCUSerialData[0];
+		createdMsg[0][1] = MCUSerialData[1];
+		Serialwrite(createdMsg[0][0]);
+		Serialwrite(createdMsg[0][1]);
+		createdMsg[0][2] = 0x80;
+		createdMsg[0][3] = chksm((uint8_t*)&_msgi);
+		Serialwrite(createdMsg[0][2]);
+		Serialwrite(createdMsg[0][3]);
+		if(sendDebug)	sendSerialDebugDataOverSerial((uint8_t*)&createdMsg[0][0]);
+
+	}
+
 }
 
 
