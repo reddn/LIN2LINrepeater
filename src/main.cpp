@@ -264,7 +264,6 @@ void createAndSendSerialMsgUsingRotary(){
 
 void sendSerialDebugDataOverSerial(uint8_t* thisdata){
 	if((serialDebugSendCounter % 31)== 0){
-		Serial.println("Start");
 		printuint_t(thisdata[0]);
 		Serial.print(" ");
 		printuint_t(thisdata[1]);
@@ -272,7 +271,11 @@ void sendSerialDebugDataOverSerial(uint8_t* thisdata){
 		printuint_t(thisdata[2]);
 		Serial.print(" ");
 		printuint_t(thisdata[3]);
-		Serial.println();
+		Serial.print(" ");
+		int16_t apply_steer = ((thisdata[0] & 0x7)<<5) | ((thisdata[0] & 0x8) << 12) |
+				(thisdata[1] & 0xF);
+		if((thisdata[0] & 8) > 0) apply_steer = apply_steer | 0x7F00;
+		Serial.println(apply_steer, DEC);
 	}
 	serialDebugSendCounter++;
 
