@@ -319,11 +319,12 @@ void sendMCUSerial(){
 		createAndSendSerialMsgUsingRotary();
 	}else {
 		uint8_t _msgi = 0;
+		uint8_t _active =  (MCUSerialData[1] >> 5) & 0x1;
 		createdMsg[0][0] = MCUSerialData[0];
 		createdMsg[0][1] = MCUSerialData[1];
 		Serialwrite(createdMsg[0][0]);
 		Serialwrite(createdMsg[0][1]);
-		createdMsg[0][2] = 0x80;
+		createdMsg[0][2] = _active == 1 ? 0x80 : 0xc0;
 		createdMsg[0][3] = chksm((uint8_t*)&_msgi);
 		Serialwrite(createdMsg[0][2]);
 		Serialwrite(createdMsg[0][3]);
@@ -332,6 +333,9 @@ void sendMCUSerial(){
 	}
 
 }
+
+
+
 
 
 
