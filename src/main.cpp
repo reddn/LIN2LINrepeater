@@ -1,6 +1,5 @@
 #include <Arduino.h>
 #include <CustomSoftwareSerial.h>
-#include <Rotary.h>
 
 // #define Serialwrite Serial.write
 #define Serialwrite customSerial->write  //on change fix setup
@@ -220,7 +219,7 @@ void readSettingsPins(){
 void checkOPSerialRxInput(){
 	while(Serial.available()){
 		uint8_t temp = Serial.read();
-		Serial.print(temp);
+		// Serial.print(temp);
 
 		if(temp == 0x00) break;
 		uint8_t active =  (temp >> 5) & 0x01; //if bb1bbbbb ... 1 is active bit
@@ -366,7 +365,7 @@ void setupTimersOld(){
 	  TCCR2B = 0;// same for TCCR2B
 	  TCNT2  = 0;//initialize counter value to 0
 	  // set compare match register for 8khz increments
-	  OCR2A = 229;// = (16*10^6) / (87.4hz*1024) - 1 (must be <256)  177== 11.4ms apart 87.2 hz
+	  OCR2A = 155 ;// = (16*10^6) / (87.4hz*1024) - 1 (must be <256)  177== 11.4ms apart 87.2 hz
 	  // turn on CTC mode
 	  TCCR2A |= 0b10; //(1 << WGM21);
 	  // Set CS21 bit for 1024 prescaler
